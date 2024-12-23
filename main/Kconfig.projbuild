@@ -1,0 +1,109 @@
+menu "Dali-Zigbee Configuration"
+
+    config DALIZB_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) to connect to.
+
+    config DALIZB_WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password (WPA or WPA2) o use.
+
+    choice DALIZB_WIFI_SAE_MODE
+        prompt "WPA3 SAE mode selection"
+        default DALIZB_WPA3_SAE_PWE_BOTH
+        help
+            Select mode for SAE as Hunt and Peck, H2E or both.
+        config DALIZB_WPA3_SAE_PWE_HUNT_AND_PECK
+            bool "HUNT AND PECK"
+        config DALIZB_WPA3_SAE_PWE_HASH_TO_ELEMENT
+            bool "H2E"
+        config DALIZB_WPA3_SAE_PWE_BOTH
+            bool "BOTH"
+    endchoice
+
+    config DALIZB_WIFI_PW_ID
+        string "PASSWORD IDENTIFIER"
+        depends on DALIZB_WPA3_SAE_PWE_HASH_TO_ELEMENT|| DALIZB_WPA3_SAE_PWE_BOTH
+        default ""
+        help
+            Password identifier for SAE H2E
+
+    config DALIZB_MAXIMUM_RETRY
+        int "Maximum retry"
+        default 5
+        help
+            Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
+
+    choice DALIZB_WIFI_SCAN_AUTH_MODE_THRESHOLD
+        prompt "WiFi Scan auth mode threshold"
+        default DALIZB_WIFI_AUTH_WPA2_WPA3_PSK
+        help
+            The weakest authmode to accept in the scan mode.
+            This value defaults to DALIZB_WIFI_AUTH_WPA2_PSK incase password is present and DALIZB_WIFI_AUTH_OPEN is used.
+            Please select DALIZB_WIFI_AUTH_WEP/DALIZB_WIFI_AUTH_WPA_PSK incase AP is operating in WEP/WPA mode.
+
+        config DALIZB_WIFI_AUTH_OPEN
+            bool "OPEN"
+        config DALIZB_WIFI_AUTH_WEP
+            bool "WEP"
+        config DALIZB_WIFI_AUTH_WPA_PSK
+            bool "WPA PSK"
+        config DALIZB_WIFI_AUTH_WPA2_PSK
+            bool "WPA2 PSK"
+        config DALIZB_WIFI_AUTH_WPA_WPA2_PSK
+            bool "WPA/WPA2 PSK"
+        config DALIZB_WIFI_AUTH_WPA3_PSK
+            bool "WPA3 PSK"
+        config DALIZB_WIFI_AUTH_WPA2_WPA3_PSK
+            bool "WPA2/WPA3 PSK"
+        config DALIZB_WIFI_AUTH_WAPI_PSK
+            bool "WAPI PSK"
+    endchoice
+
+    config DALIZB_UPDATE_URL
+        string "Firmware update URL"
+        default "http://someserver.localdomain/firmware.bin"
+        help
+            Firmware update URL.
+
+    config DALIZB_LED_EMULATOR
+        bool "Emulate effects using a few LEDs"
+        default n
+        help
+            Emulate lighting effects with some LEDs in GPIOs.
+
+    config DALIZB_LED_1_PIN
+        int "LED 1 GPIO pin"
+        default 17 
+        help
+            GPIO PIN for LED 1.
+
+    config DALIZB_LED_2_PIN
+        int "LED 2 GPIO pin"
+        default 16
+        help
+            GPIO PIN for LED 2.
+
+    config DALIZB_LED_3_PIN
+        int "LED 3 GPIO pin"
+        default 19
+        help
+            GPIO PIN for LED 3.
+
+    config DALIZB_LED_4_PIN
+        int "LED 4 GPIO pin"
+        default 20
+        help
+            GPIO PIN for LED 4.
+
+    config DALIZB_LED_5_PIN
+        int "LED 5 GPIO pin"
+        default 6
+        help
+            GPIO PIN for LED 5.
+        
+endmenu

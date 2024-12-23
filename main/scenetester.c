@@ -20,11 +20,16 @@ uint64_t esp_timer_get_time()
     return ts.tv_sec * UINT64_C(1000000000) + ts.tv_nsec;
 }
 
+uint32_t esp_random()
+{
+
+}
+
 // Main Dali task
 void main()
 {
     uint8_t counter;
-    int     last_effect = -1, effect = 2;
+    int     last_effect = -1, effect = 4;
     uint32_t fps_sleep = 0, frame = 0;
     uint64_t frame_start_time = 0, frame_end_time = 0;
     uint64_t effect_start_time = 0;

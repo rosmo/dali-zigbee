@@ -467,7 +467,7 @@ int dali_arc(uint8_t address, uint8_t value, dali_address_type_t addr_type)
 static void esp_dali_task(void *pvParameters)
 {
     uint8_t counter;
-    int     last_effect = -1, effect = 3;
+    int     last_effect = -1, effect = 4;
     uint32_t fps_sleep = 0, frame = 0;
     uint64_t frame_start_time = 0, frame_end_time = 0;
     uint64_t effect_start_time = 0;

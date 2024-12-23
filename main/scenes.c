@@ -1,8 +1,11 @@
 #include "scenes.h"
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdio.h>
+#ifdef ESP_IDF_VERSION
 #include "esp_log.h"
 #define TAG "scenes"
+#endif
 
 light_effect light_effects[TOTAL_EFFECTS] = {
     {
@@ -33,6 +36,15 @@ light_effect light_effects[TOTAL_EFFECTS] = {
     {
         .fps = 60,
         .render = (void *)twinkle_stars,
+        .total_lights = TOTAL_LIGHTS,
+        .max_brightness = MAX_BRIGHTNESS,
+        .min_brightness = MIN_BRIGHTNESS,
+        .speed = 10000,
+        .user_data = NULL,
+    },
+    {
+        .fps = 60,
+        .render = (void *)pulsing_swoosh,
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
@@ -203,6 +215,69 @@ void twinkle_stars(light_effect *effect, uint32_t frame)
                 d[i].target = RANDOM_UINT8();
             }
             effect->light_state[i].level = d[i].level;
+        }
+    }
+}
+
+typedef struct  {
+    uint8_t   light;
+    float     level;
+    uint8_t   direction;
+    float     step;
+    uint8_t   switch_after_pulses;
+    uint8_t   pulses;
+} pulsing_swoosh_data;
+
+void pulsing_swoosh(light_effect *effect, uint32_t frame)
+{
+    pulsing_swoosh_data *d = NULL;
+    if (effect->user_data == NULL) {
+        effect->user_data = (void *)calloc(1, sizeof(pulsing_swoosh_data));
+        assert(effect->user_data != NULL);
+
+        d = (pulsing_swoosh_data *)effect->user_data;
+        d->light = 2;
+        d->level = 0.0;
+        d->switch_after_pulses = 10;
+
+        float step_every_ms = (float)(effect->speed / (1000 / effect->fps)); // == 50 ms
+        d->step = (float)(effect->max_brightness - effect->min_brightness) / step_every_ms; // = 5.08 per step
+    } else {
+        d = (pulsing_swoosh_data *)effect->user_data;
+    }
+
+    if (d != NULL) {
+        if (d->direction == 0) {
+            d->level += d->step;
+        } else {
+            d->level -= d->step;
+        }
+        if (d->level < effect->min_brightness || d->level > effect->max_brightness) {
+            d->direction = !d->direction;
+            if (d->level < effect->min_brightness) {
+                d->level = effect->min_brightness;
+                d->pulses++;
+                if (d->pulses > d->switch_after_pulses) {
+                    d->pulses = 0;
+                    d->light = RANDOM_UINT8() % effect->total_lights;
+                }
+            }
+            if (d->level > effect->max_brightness) {
+                d->level = effect->max_brightness;
+            }
+        }
+
+        effect->light_state[d->light].level = (uint8_t)d->level;
+
+        // Bulbs to the left...
+        int other_lights = effect->total_lights - 1;
+        float lf = d->level / effect->total_lights;
+        for (int i = d->light - 1; i >= 0; i--) {
+            effect->light_state[i].level = (uint8_t)(lf * (i + 1));
+        }
+        // Bulbs to the right...
+        for (int i = d->light + 1, o = effect->total_lights - d->light - 1; i < effect->total_lights; i++, o--) {
+            effect->light_state[i].level = (uint8_t)(lf * o);
         }
     }
 }

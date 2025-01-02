@@ -1,5 +1,23 @@
 menu "Dali-Zigbee Configuration"
 
+    config DALIZB_TX_PIN
+        int "DALI TX GPIO pin"
+        default 5
+        help
+            GPIO TX PIN for DALI bus.
+
+    config DALIZB_RX_PIN
+        int "DALI RX GPIO pin"
+        default 4
+        help
+            GPIO TX PIN for DALI bus.
+    
+    config DALIZB_WIFI
+        bool "Connect to WiFi"
+        default n
+        help
+            Connect to WiFi.
+
     config DALIZB_WIFI_SSID
         string "WiFi SSID"
         default "myssid"

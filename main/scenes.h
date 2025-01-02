@@ -13,7 +13,7 @@
 #define TOTAL_LIGHTS   5
 #define MAX_BRIGHTNESS 254
 #define MIN_BRIGHTNESS 0
-#define TOTAL_EFFECTS  5
+#define TOTAL_EFFECTS  7
 
 typedef struct _light_effect light_effect;
 typedef void (*render_effect)(light_effect *effect, uint32_t frame);
@@ -32,9 +32,11 @@ typedef struct _light_effect {
     render_effect render;
     light_state   light_state[TOTAL_LIGHTS];
     uint32_t      effect_config;
+    bool          free_user_data;
     void          *user_data;
 } light_effect;
 
+void fade(light_effect *effect, uint32_t frame);
 void fade_in_out(light_effect *effect, uint32_t frame);
 void fade_in_sync(light_effect *effect, uint32_t frame);
 void light_rail(light_effect *effect, uint32_t frame);

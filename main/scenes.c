@@ -9,11 +9,32 @@
 
 light_effect light_effects[TOTAL_EFFECTS] = {
     {
+        .fps = 4,
+        .render = (void *)fade,
+        .total_lights = TOTAL_LIGHTS,
+        .max_brightness = MAX_BRIGHTNESS,
+        .min_brightness = MIN_BRIGHTNESS,
+        .effect_config = 2,
+        .free_user_data = false,
+        .user_data = NULL,
+    },
+    {
+        .fps = 4,
+        .render = (void *)fade,
+        .total_lights = TOTAL_LIGHTS,
+        .max_brightness = MAX_BRIGHTNESS,
+        .min_brightness = MIN_BRIGHTNESS,
+        .effect_config = 1,
+        .free_user_data = true,
+        .user_data = NULL,
+    },
+    {
         .fps = 5,
         .render = (void *)fade_in_out,
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
+        .free_user_data = true,
         .user_data = NULL,
     },
     {
@@ -22,6 +43,7 @@ light_effect light_effects[TOTAL_EFFECTS] = {
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
+        .free_user_data = true,
         .user_data = NULL,
     },
     {
@@ -31,24 +53,27 @@ light_effect light_effects[TOTAL_EFFECTS] = {
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
         .speed = 10000,
+        .free_user_data = true,
         .user_data = NULL,
     },
     {
-        .fps = 60,
+        .fps = 30,
         .render = (void *)twinkle_stars,
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
         .speed = 10000,
+        .free_user_data = true,
         .user_data = NULL,
     },
     {
-        .fps = 60,
+        .fps = 30,
         .render = (void *)pulsing_swoosh,
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
-        .speed = 10000,
+        .speed = 4000,
+        .free_user_data = true,
         .user_data = NULL,
     },
 };
@@ -65,6 +90,43 @@ bool fade_off(light_effect *effect, uint32_t frame)
     return all_minimum;
 }
 
+void fade(light_effect *effect, uint32_t frame)
+{
+    uint8_t *dir = NULL;
+    if (effect->user_data == NULL) {
+        effect->user_data = (void *)calloc(effect->total_lights, sizeof(uint8_t));
+        assert(effect->user_data != NULL);
+        dir = (uint8_t *)effect->user_data;
+        for (int i = 0; i < effect->total_lights; i++) {
+            if (effect->effect_config > 0) {
+                dir[i] = effect->effect_config;
+            } else {
+                dir[i] = 1;
+            }
+        }
+    } else {
+        dir = (uint8_t *)effect->user_data;
+    }
+
+    for (int i = 0; i < effect->total_lights; i++) {
+        switch (dir[i]) {
+        case 1:
+            effect->light_state[i].level++;
+            if (effect->light_state[i].level >= effect->max_brightness) {
+                dir[i] = 0;
+            }
+            break;
+        case 2:
+            effect->light_state[i].level--;
+            if (effect->light_state[i].level <= effect->min_brightness) {
+                dir[i] = 0;
+            }
+            break;
+        }
+    }
+}
+
+
 void fade_in_out(light_effect *effect, uint32_t frame)
 {
     uint8_t *dir = NULL;
@@ -73,7 +135,11 @@ void fade_in_out(light_effect *effect, uint32_t frame)
         assert(effect->user_data != NULL);
         dir = (uint8_t *)effect->user_data;
         for (int i = 0; i < effect->total_lights; i++) {
-            dir[i] = 1;
+            if (effect->effect_config > 0) {
+                dir[i] = effect->effect_config;
+            } else {
+                dir[i] = 1;
+            }
         }
     } else {
         dir = (uint8_t *)effect->user_data;

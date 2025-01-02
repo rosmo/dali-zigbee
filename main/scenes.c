@@ -58,18 +58,8 @@ light_effect light_effects[TOTAL_EFFECTS] = {
         .user_data = NULL,
     },
     {
-        .fps = 30,
+        .fps = 20,
         .render = (void *)twinkle_stars,
-        .total_lights = TOTAL_LIGHTS,
-        .max_brightness = MAX_BRIGHTNESS,
-        .min_brightness = MIN_BRIGHTNESS,
-        .speed = 10000,
-        .free_user_data = true,
-        .user_data = NULL,
-    },
-    {
-        .fps = 30,
-        .render = (void *)pulsing_swoosh,
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
@@ -77,14 +67,44 @@ light_effect light_effects[TOTAL_EFFECTS] = {
         .free_user_data = true,
         .user_data = NULL,
     },
+    {
+        .fps = 20,
+        .render = (void *)pulsing_swoosh,
+        .total_lights = TOTAL_LIGHTS,
+        .max_brightness = MAX_BRIGHTNESS,
+        .min_brightness = MIN_BRIGHTNESS,
+        .speed = 2000,
+        .free_user_data = true,
+        .user_data = NULL,
+    },
 };
+
+void increase_clamp(light_effect *effect, uint8_t light, uint32_t increase) 
+{
+    if (increase == 0) increase = 1;
+    if ((effect->light_state[light].level + increase) > effect->max_brightness) {
+        effect->light_state[light].level = effect->max_brightness;
+    } else {
+        effect->light_state[light].level += increase;
+    }
+}
+
+void decrease_clamp(light_effect *effect, uint8_t light, uint32_t decrease) 
+{
+    if (decrease == 0) decrease = 1;
+    if ((effect->light_state[light].level + decrease) < effect->min_brightness) {
+        effect->light_state[light].level = effect->min_brightness;
+    } else {
+        effect->light_state[light].level -= decrease;
+    }
+}
 
 bool fade_off(light_effect *effect, uint32_t frame)
 {
     bool all_minimum = true;
     for (int i = 0; i < effect->total_lights; i++) {
         if (effect->light_state[i].level > effect->min_brightness) {
-            effect->light_state[i].level--;
+            decrease_clamp(effect, i, effect->speed);
             all_minimum = false;
         }
     }
@@ -113,15 +133,13 @@ void fade(light_effect *effect, uint32_t frame)
     for (int i = 0; i < effect->total_lights; i++) {
         switch (dir[i]) {
         case 1:
-            if (effect->light_state[i].level < effect->max_brightness)
-                effect->light_state[i].level++;
+            increase_clamp(effect, i, effect->speed);
             if (effect->effect_config == 0 && effect->light_state[i].level >= effect->max_brightness) {
                 dir[i] = 0;
             }
             break;
         case 2:
-            if (effect->light_state[i].level > effect->min_brightness)
-                effect->light_state[i].level--;
+            decrease_clamp(effect, i, effect->speed);
             if (effect->effect_config == 0 && effect->light_state[i].level <= effect->min_brightness) {
                 dir[i] = 0;
             }
@@ -152,13 +170,13 @@ void fade_in_out(light_effect *effect, uint32_t frame)
     for (int i = 0; i < effect->total_lights; i++) {
         switch (dir[i]) {
         case 1:
-            effect->light_state[i].level++;
+            increase_clamp(effect, i, effect->speed);
             if (effect->light_state[i].level >= effect->max_brightness) {
                 dir[i] = 2;
             }
             break;
         case 2:
-            effect->light_state[i].level--;
+            decrease_clamp(effect, i, effect->speed);
             if (effect->light_state[i].level <= effect->min_brightness) {
                 dir[i] = 1;
             }
@@ -183,12 +201,12 @@ void fade_in_sync(light_effect *effect, uint32_t frame)
         bool change_dir = false;
         for (int i = 0; i < effect->total_lights; i++) {
             if (*dir == 1) {
-                effect->light_state[i].level++;
+                increase_clamp(effect, i, effect->speed);
                 if (effect->light_state[i].level >= effect->max_brightness) {
                     change_dir = true;
                 }
             } else {
-                effect->light_state[i].level--;
+                decrease_clamp(effect, i, effect->speed);
                 if (effect->light_state[i].level <= effect->min_brightness) {
                     change_dir = true;
                 }

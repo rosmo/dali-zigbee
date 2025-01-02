@@ -2,24 +2,25 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
-#ifdef ESP_IDF_VERSION
+
+#ifdef ESP_PLATFORM
 #include "esp_log.h"
 #define TAG "scenes"
 #endif
 
 light_effect light_effects[TOTAL_EFFECTS] = {
     {
-        .fps = 4,
+        .fps = 20,
         .render = (void *)fade,
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
         .effect_config = 2,
-        .free_user_data = false,
+        .free_user_data = true,
         .user_data = NULL,
     },
     {
-        .fps = 4,
+        .fps = 20,
         .render = (void *)fade,
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
@@ -104,6 +105,7 @@ void fade(light_effect *effect, uint32_t frame)
                 dir[i] = 1;
             }
         }
+        ESP_LOGI(TAG, "Direction set to %d, effect config: %lu", dir[0], effect->effect_config);
     } else {
         dir = (uint8_t *)effect->user_data;
     }
@@ -111,14 +113,16 @@ void fade(light_effect *effect, uint32_t frame)
     for (int i = 0; i < effect->total_lights; i++) {
         switch (dir[i]) {
         case 1:
-            effect->light_state[i].level++;
-            if (effect->light_state[i].level >= effect->max_brightness) {
+            if (effect->light_state[i].level < effect->max_brightness)
+                effect->light_state[i].level++;
+            if (effect->effect_config == 0 && effect->light_state[i].level >= effect->max_brightness) {
                 dir[i] = 0;
             }
             break;
         case 2:
-            effect->light_state[i].level--;
-            if (effect->light_state[i].level <= effect->min_brightness) {
+            if (effect->light_state[i].level > effect->min_brightness)
+                effect->light_state[i].level--;
+            if (effect->effect_config == 0 && effect->light_state[i].level <= effect->min_brightness) {
                 dir[i] = 0;
             }
             break;
@@ -336,7 +340,6 @@ void pulsing_swoosh(light_effect *effect, uint32_t frame)
         effect->light_state[d->light].level = (uint8_t)d->level;
 
         // Bulbs to the left...
-        int other_lights = effect->total_lights - 1;
         float lf = d->level / effect->total_lights;
         for (int i = d->light - 1; i >= 0; i--) {
             effect->light_state[i].level = (uint8_t)(lf * (i + 1));

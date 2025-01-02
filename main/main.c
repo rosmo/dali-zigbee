@@ -44,6 +44,8 @@ static bool driver_is_inited = false;
 static TaskHandle_t xZigbeeTask = NULL;
 static TaskHandle_t xDaliTask = NULL;
 
+static SemaphoreHandle_t lightMutex;
+
 #define LED_MAX_DUTY 4000
 #define LED_DUTY_DIVIDER (LED_MAX_DUTY/256)
 ledc_channel_config_t ledc_channel[TOTAL_LIGHTS] = {
@@ -293,8 +295,15 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     switch (callback_id) {
     case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID:
         if (message != NULL) {
+            xSemaphoreTake(lightMutex, portMAX_DELAY);
+
+            ESP_LOGI(TAG, "Set attribute value message");
             esp_zb_zcl_set_attr_value_message_t *msg = (esp_zb_zcl_set_attr_value_message_t *)message;
+            ESP_LOGI(TAG, "Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d), data(%d)",
+                msg->info.dst_endpoint, msg->info.cluster, msg->attribute.id, msg->attribute.data.size, *(bool *)msg->attribute.data.value);
+            ESP_LOGI(TAG, "Endpoint: %d Cluster: %d Attribute ID: %d", msg->info.dst_endpoint, msg->info.cluster, msg->attribute.id);
             if (msg->info.dst_endpoint == 10) {
+                ESP_LOGI(TAG, "Set attribute value message");
                 if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
                     if (msg->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && msg->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
                         bool light_state = msg->attribute.data.value ? *(bool *)msg->attribute.data.value : false;
@@ -305,6 +314,20 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                             effect = 0;
                         }
                     }
+                } else if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
+                    uint8_t level = *(uint8_t *)msg->attribute.data.value;
+                    
+                    ESP_LOGI(TAG, "Setting brightness to: %d", level);
+                    if (level > 0) {
+                        for (int i = 0; i < TOTAL_EFFECTS; i++) {
+                            light_effects[i].max_brightness = level;
+                            for (int o = 0; o < TOTAL_LIGHTS; o++) {
+                                if (light_effects[i].light_state[o].level > level) {
+                                    light_effects[i].light_state[o].level = level;
+                                }
+                            } 
+                        }
+                    }
                 } else if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT) {
                     float analog_output_new_value = *(float *)msg->attribute.data.value;
                     ESP_LOGI(TAG, "Analog output set to %f", analog_output_new_value);
@@ -313,9 +336,13 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                     if (multistate_value_new_value < TOTAL_EFFECTS) {
                         ESP_LOGI(TAG, "Activating effect %d", multistate_value_new_value);
                         effect = multistate_value_new_value;
+                    } else {
+                        ESP_LOGW(TAG, "Invalid effect specified: %d", multistate_value_new_value);
                     }
                 }
             }
+
+            xSemaphoreGive(lightMutex);
         } else {
             ESP_LOGW(TAG, "Received Zigbee set attribute value with empty message.");
         }
@@ -332,7 +359,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback: config response", callback_id);
         ret = zb_configure_report_resp_handler((esp_zb_zcl_cmd_config_report_resp_message_t *)message);
         break;
-    default:
+    default: 
         ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
         break;
     }
@@ -430,21 +457,26 @@ static void esp_zb_task(void *pvParameters)
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(esp_zb_cluster_list, esp_zb_level_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
     esp_zb_multistate_value_cluster_cfg_t multistate_value_cfg;
-    multistate_value_cfg.out_of_service = 0;
+    multistate_value_cfg.out_of_service = false;
     multistate_value_cfg.present_value = 0;
     multistate_value_cfg.status_flags = ESP_ZB_ZCL_MULTI_VALUE_STATUS_FLAGS_DEFAULT_VALUE;
     multistate_value_cfg.number_of_states = sizeof(light_effects) / sizeof(light_effects[0]);
     esp_zb_attribute_list_t *esp_zb_multistate_value_cluster = esp_zb_multistate_value_cluster_create(&multistate_value_cfg);
-    esp_zb_attribute_list_t *attr = esp_zb_multistate_value_cluster;
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_multistate_value_cluster(esp_zb_cluster_list, esp_zb_multistate_value_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+#if 0
+    esp_zb_attribute_list_t *multi_value_cluster = esp_zb_cluster_list_get_cluster(esp_zb_cluster_list, ESP_ZB_ZCL_CLUSTER_ID_MULTI_VALUE, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_attribute_list_t *attr = multi_value_cluster;
     while (attr) {
         if (attr->attribute.id == ESP_ZB_ZCL_ATTR_MULTI_VALUE_PRESENT_VALUE_ID) {
-            attr->attribute.access = esp_zb_multistate_value_cluster->attribute.access | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
+            ESP_LOGI(TAG, "Enabling attribute reporting for multi-value cluster");
+            attr->attribute.access = multi_value_cluster->attribute.access | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
             break;
         }
         attr = attr->next;
     }
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_multistate_value_cluster(esp_zb_cluster_list, esp_zb_multistate_value_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-
+#endif
+ 
 #if 0
     // Add analog value cluster for effect setting
     esp_zb_analog_output_cluster_cfg_t analog_output_cfg;
@@ -464,6 +496,24 @@ static void esp_zb_task(void *pvParameters)
     ESP_ERROR_CHECK(esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_cluster_list, endpoint_cfg));
 
     esp_zb_device_register(esp_zb_ep_list);
+
+    /* Config the reporting info  */
+    esp_zb_zcl_reporting_info_t reporting_info = {
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
+        .ep = 10,
+        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_MULTI_VALUE,
+        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .u.send_info.min_interval = 1,
+        .u.send_info.max_interval = 0,
+        .u.send_info.def_min_interval = 1,
+        .u.send_info.def_max_interval = 0,
+        .u.send_info.delta.u16 = 1000,
+        .attr_id = ESP_ZB_ZCL_ATTR_MULTI_VALUE_PRESENT_VALUE_ID,
+        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
+    };
+
+    esp_zb_zcl_update_reporting_info(&reporting_info);
 
     esp_zb_core_action_handler_register(zb_action_handler);
 
@@ -542,16 +592,31 @@ static void esp_dali_task(void *pvParameters)
     }
     light_effect *light_effect = NULL;
     effect_start_time = esp_timer_get_time() / 1000;
+
     while (true) {
         frame_start_time = esp_timer_get_time() / 1000;
 
+        xSemaphoreTake(lightMutex, portMAX_DELAY);
         if (last_effect != effect) {
             if (light_effects[last_effect].free_user_data && light_effects[last_effect].user_data != NULL) {
                 free(light_effects[last_effect].user_data);
                 light_effects[last_effect].user_data = NULL;
             }
             last_effect = effect;
+
+            esp_zb_lock_acquire(portMAX_DELAY);
+            uint16_t mstate_value = (uint16_t)effect;
+            uint16_t light_state = (uint16_t)(effect > 0 ? true : false);
+            esp_zb_zcl_set_attribute_val(10,
+                                         ESP_ZB_ZCL_CLUSTER_ID_MULTI_VALUE, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                         ESP_ZB_ZCL_ATTR_MULTI_VALUE_PRESENT_VALUE_ID, &mstate_value, false);
+            esp_zb_zcl_set_attribute_val(10,
+                                         ESP_ZB_ZCL_CLUSTER_ID_ON_OFF, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                         ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, &light_state, false);
+            esp_zb_lock_release();
+
             light_effect = &light_effects[effect];
+            memcpy(light_effect->light_state, last_light_state, sizeof(light_state) * light_effect->total_lights);
             fps_sleep = 1000 / light_effect->fps;
             effect_start_time = esp_timer_get_time() / 1000000;
             ESP_LOGI(TAG, "Effect %d active, FPS sleep: %lu ms per frame", effect, fps_sleep);
@@ -599,13 +664,16 @@ static void esp_dali_task(void *pvParameters)
                 }
             }
         }
+        // Store last state
+        memcpy(last_light_state, light_effect->light_state, sizeof(light_state) * light_effect->total_lights);
+
         frame_end_time = esp_timer_get_time() / 1000;
         frame_diff = frame_end_time - frame_start_time;
+        xSemaphoreGive(lightMutex);
+
         if (frame_diff < fps_sleep) {
             vTaskDelay(pdMS_TO_TICKS((TickType_t)(fps_sleep - frame_diff)));
         }
-        // Store last state
-        memcpy(last_light_state, light_effect->light_state, sizeof(light_state) * light_effect->total_lights);
     }
 }
 
@@ -636,6 +704,8 @@ void app_main(void)
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
     };
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
+
+    lightMutex = xSemaphoreCreateMutex();
 
     xTaskCreate(esp_dali_task, "DALI", 4096, NULL, 5, &xDaliTask);
     xTaskCreate(esp_zb_task, "Zigbee", 4096, NULL, configMAX_PRIORITIES - 1, &xZigbeeTask);

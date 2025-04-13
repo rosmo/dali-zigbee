@@ -136,7 +136,6 @@ dali_bus *dali_bus_begin(uint8_t tx_pin, uint8_t rx_pin, bool active_low)
     gpio_install_isr_service(0);
     gpio_isr_handler_add(rx_pin, dali_bus_hook_pinchange_isr, (void *)bus);
 
-
     return bus;
 }
 

@@ -11,7 +11,13 @@ menu "Dali-Zigbee Configuration"
         default 4
         help
             GPIO TX PIN for DALI bus.
-    
+
+    config DALIZB_RESET_PIN
+        int "Reset GPIO pin"
+        default 6
+        help
+            Reset PIN.
+
     config DALIZB_WIFI
         bool "Connect to WiFi"
         default n

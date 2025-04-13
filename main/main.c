@@ -13,7 +13,7 @@
 #include <nvs_flash.h>
 
 #define TOTAL_BUTTONS  5
-#define RESET_GPIO_PIN 2
+#define RESET_GPIO_PIN CONFIG_DALIZB_RESET_PIN
 
 #include "dali/dali.h"
 #include "driver/gptimer.h"
@@ -34,17 +34,19 @@ static char manufname[] = {9, 'E', 's', 'p', 'r', 'e', 's', 's', 'i', 'f'};
 // Internal button state
 static bool zigbee_initialized = false;
 static light_state last_light_state[TOTAL_LIGHTS];
-static uint8_t last_effect = -1, effect = 0;
+static int32_t last_effect = -1, effect = 0;
 
 static dali *dali_ = NULL;
 
 static bool factory_reset = false;
 static bool driver_is_inited = false;
+static int dali_bus_timeouting = 0;
 
 static TaskHandle_t xZigbeeTask = NULL;
 static TaskHandle_t xDaliTask = NULL;
-
 static SemaphoreHandle_t lightMutex;
+
+static nvs_handle_t nvs_h;
 
 #define LED_MAX_DUTY 4000
 #define LED_DUTY_DIVIDER (LED_MAX_DUTY/256)
@@ -156,8 +158,9 @@ static esp_err_t deferred_driver_init(void)
 #else
         init_led_emulator();
         driver_is_inited = true;
-#endif        
-        xTaskNotifyGive(xDaliTask);
+#endif
+        if (xDaliTask != NULL)
+            xTaskNotifyGive(xDaliTask);
     }
     return driver_is_inited ? ESP_OK : ESP_FAIL;
 }
@@ -213,11 +216,14 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
         if (err_status == ESP_OK) {
             ESP_LOGI(TAG, "Deferred driver initialization %s", deferred_driver_init() ? "failed" : "successful");
-            ESP_LOGI(TAG, "Device started up in%s factory-reset mode", esp_zb_bdb_is_factory_new() ? "" : " non");
-            if (esp_zb_bdb_is_factory_new()) {
+            ESP_LOGI(TAG, "Device started up in%s factory-reset mode", factory_reset ? "" : " non");
+            if (factory_reset)
+            {
                 ESP_LOGI(TAG, "Start network steering");
                 esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
-            } else {
+            }
+            else
+            {
                 ESP_LOGI(TAG, "Device rebooted");
                 zigbee_initialized = true;
             }
@@ -335,7 +341,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                     uint16_t multistate_value_new_value = *(uint16_t *)msg->attribute.data.value;
                     if (multistate_value_new_value < TOTAL_EFFECTS) {
                         ESP_LOGI(TAG, "Activating effect %d", multistate_value_new_value);
-                        effect = multistate_value_new_value;
+                        effect = (int32_t)multistate_value_new_value;
                     } else {
                         ESP_LOGW(TAG, "Invalid effect specified: %d", multistate_value_new_value);
                     }
@@ -366,6 +372,12 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     return ret;
 }
 
+// Force reset in case reset button is pressed
+static void reset_interrupt_handler(void *args)
+{
+    // esp_restart();
+}
+
 // Checks if the reset GPIO is bridged and performs a factory
 // reset
 void check_reset_gpio(void)
@@ -381,21 +393,42 @@ void check_reset_gpio(void)
     for (int i = 0; i < 5; i++) {
         int level = gpio_get_level(RESET_GPIO_PIN);
         if (level == 1) {
-            ESP_LOGW(TAG, "Pin %d is high, performing factory reset", RESET_GPIO_PIN);
-            if (!esp_zb_bdb_is_factory_new()) {
-                esp_zb_factory_reset();
-            } else {
-                factory_reset = true;
-                ESP_LOGI(TAG, "Skipping factory reset, since we are already factory reset.");
-                break;
+            if (i == 4)
+            {
+                ESP_LOGW(TAG, "Pin %d is high, performing factory reset", RESET_GPIO_PIN);
+                if (!esp_zb_bdb_is_factory_new())
+                {
+                    esp_zb_factory_reset();
+                }
+                else
+                {
+                    factory_reset = true;
+                    ESP_LOGI(TAG, "Skipping factory reset, since we are already factory reset.");
+                    break;
+                }
             }
+            else
+            {
+                ESP_LOGI(TAG, "Reset pin is high, waiting for %d seconds to factory reset...", 5 - i);
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
-        vTaskDelay(pdMS_TO_TICKS(120));
+        else
+        {
+            ESP_LOGI(TAG, "Reset pin is low, normal startup.");
+            break;
+        }
     }
     if (!factory_reset) {
         factory_reset = esp_zb_bdb_is_factory_new();
     }
-    ESP_LOGI(TAG, "Not factory resetting (factory reset status is %s), continuing startup...", (factory_reset ? "true" : "false"));
+    ESP_LOGI(TAG, "Factory resetting (factory reset status is %s), continuing startup...", (factory_reset ? "true" : "false"));
+
+    ESP_LOGI(TAG, "Enabling reboot interrupt on reset button.");
+    gpio_install_isr_service(0);
+    gpio_set_intr_type(RESET_GPIO_PIN, GPIO_INTR_POSEDGE);
+    gpio_isr_handler_add(RESET_GPIO_PIN, reset_interrupt_handler, (void *)NULL);
+    gpio_intr_enable(RESET_GPIO_PIN);
 }
 
 // Main Zigbee setup
@@ -520,6 +553,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     // esp_zb_set_secondary_network_channel_set(ESP_ZB_SECONDARY_CHANNEL_MASK);
 
+    ESP_LOGI(TAG, "Starting Zigbee now...");
     ESP_ERROR_CHECK(esp_zb_start(true));
 
     esp_zb_stack_main_loop();
@@ -547,6 +581,15 @@ int dali_command(uint8_t address, dali_cmd_t command, dali_address_type_t addr_t
 #endif
 
     resp = dali_send_cmd_wait(dali_, address, command, addr_type, 100);
+    if (resp == DALI_READY_TIMEOUT)
+    {
+        dali_bus_timeouting += 1;
+    }
+    else
+    {
+        dali_bus_timeouting = 0;
+    }
+
 #ifdef DALI_DEBUG
     end_time = esp_timer_get_time() / 1000;
     ESP_LOGI(TAG, "Response was: %d (took %llu ms with %llu ISRs)", resp, end_time - start_time, dali_->bus->isr_count - isr_start);
@@ -565,7 +608,15 @@ int dali_arc(uint8_t address, uint8_t value, dali_address_type_t addr_type)
     start_time = esp_timer_get_time() / 1000;
 #endif
 
-    resp = dali_send_arc_wait(dali_, address, value, addr_type, 100);
+    resp = dali_send_arc_wait(dali_, address, value, addr_type, 50);
+    if (resp == DALI_READY_TIMEOUT)
+    {
+        dali_bus_timeouting += 1;
+    }
+    else
+    {
+        dali_bus_timeouting = 0;
+    }
 #ifdef DALI_DEBUG
     end_time = esp_timer_get_time() / 1000;
     ESP_LOGI(TAG, "Response was: %d (took %llu ms with %llu ISRs)", resp, end_time - start_time, dali_->bus->isr_count - isr_start);
@@ -598,7 +649,9 @@ static void esp_dali_task(void *pvParameters)
 
         xSemaphoreTake(lightMutex, portMAX_DELAY);
         if (last_effect != effect) {
-            if (light_effects[last_effect].free_user_data && light_effects[last_effect].user_data != NULL) {
+            ESP_LOGI(TAG, "Last effect: %ld", last_effect);
+            if (last_effect > -1 && light_effects[last_effect].free_user_data && light_effects[last_effect].user_data != NULL)
+            {
                 free(light_effects[last_effect].user_data);
                 light_effects[last_effect].user_data = NULL;
             }
@@ -615,11 +668,17 @@ static void esp_dali_task(void *pvParameters)
                                          ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, &light_state, false);
             esp_zb_lock_release();
 
+            // Save last effect to NVS
+            esp_err_t nvs_err = nvs_set_i32(nvs_h, "effect_index", effect);
+            ESP_ERROR_CHECK(nvs_err);
+            nvs_err = nvs_commit(nvs_h);
+            ESP_ERROR_CHECK(nvs_err);
+
             light_effect = &light_effects[effect];
             memcpy(light_effect->light_state, last_light_state, sizeof(light_state) * light_effect->total_lights);
             fps_sleep = 1000 / light_effect->fps;
             effect_start_time = esp_timer_get_time() / 1000000;
-            ESP_LOGI(TAG, "Effect %d active, FPS sleep: %lu ms per frame", effect, fps_sleep);
+            ESP_LOGI(TAG, "Effect %ld active, FPS sleep: %lu ms per frame", effect, fps_sleep);
         }
         light_effect->render((void *)light_effect, frame);
         frame++;
@@ -641,7 +700,7 @@ static void esp_dali_task(void *pvParameters)
                 if (light_effect->light_state[i].level == light_effect->min_brightness) {
                     // Turn light off
 #ifndef CONFIG_DALIZB_LED_EMULATOR
-                    ESP_LOGI(TAG, "Setting DALI address %u to off", i);
+                    // ESP_LOGI(TAG, "Setting DALI address %u to off", i);
                     dali_command(i, DALI_CMD_OFF, DALI_SHORT_ADDRESS);
 #else
                     if (driver_is_inited) {
@@ -652,7 +711,7 @@ static void esp_dali_task(void *pvParameters)
                 } else {
                     // Send level directly
 #ifndef CONFIG_DALIZB_LED_EMULATOR
-                    ESP_LOGI(TAG, "Setting DALI address %u to %u", i, light_effect->light_state[i].level);
+                    // ESP_LOGI(TAG, "Setting DALI address %u to %u", i, light_effect->light_state[i].level);
                     dali_arc(i, light_effect->light_state[i].level, DALI_SHORT_ADDRESS);
 #else
                     // ESP_LOGI(TAG,   "Set LED %d to %d", i, LED_DUTY_DIVIDER*light_effect->light_state[i].level);
@@ -674,6 +733,15 @@ static void esp_dali_task(void *pvParameters)
         if (frame_diff < fps_sleep) {
             vTaskDelay(pdMS_TO_TICKS((TickType_t)(fps_sleep - frame_diff)));
         }
+
+        if (dali_bus_timeouting > 10)
+        {
+            if (dali_bus_timeouting == 1000)
+            {
+                ESP_LOGW(TAG, "DALI bus is timeouting, putting long pauses in.");
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
 }
 
@@ -684,15 +752,37 @@ void app_main(void)
     esp_read_mac(ieeeMac, ESP_MAC_IEEE802154);
     ESP_LOGI(TAG, "Zigbee MAC: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", ieeeMac[0], ieeeMac[1], ieeeMac[2], ieeeMac[3], ieeeMac[4], ieeeMac[5], ieeeMac[6], ieeeMac[7]);
 
-    ESP_LOGI(TAG, "Hello World from OTA update! Version 4!");
+    ESP_LOGI(TAG, "Hello World from OTA update! Version 5!");
 
     check_reset_gpio();
 
 #ifdef CONFIG_DALIZB_WIFI
     over_the_air_update();
 #endif
-    // ESP_LOGI(TAG, "nvs_flash_init()");
-    ESP_ERROR_CHECK(nvs_flash_init());
+
+    ESP_LOGI(TAG, "nvs_flash_init()");
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        // NVS partition was truncated and needs to be erased
+        // Retry nvs_flash_init
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+
+    ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_h));
+    nvs_err = nvs_get_i32(nvs_h, "effect_index", &effect);
+    switch (nvs_err)
+    {
+    case ESP_OK:
+        break;
+    case ESP_ERR_NVS_NOT_FOUND:
+        effect = 0;
+        break;
+    default:
+        ESP_ERROR_CHECK(nvs_err);
+    }
 
     esp_pm_lock_handle_t freq_lock;
     esp_pm_lock_handle_t light_sleep_lock;
@@ -708,5 +798,5 @@ void app_main(void)
     lightMutex = xSemaphoreCreateMutex();
 
     xTaskCreate(esp_dali_task, "DALI", 4096, NULL, 5, &xDaliTask);
-    xTaskCreate(esp_zb_task, "Zigbee", 4096, NULL, configMAX_PRIORITIES - 1, &xZigbeeTask);
+    xTaskCreate(esp_zb_task, "Zigbee", 4096, NULL, 10, &xZigbeeTask);
 }

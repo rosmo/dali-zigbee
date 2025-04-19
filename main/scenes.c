@@ -11,21 +11,21 @@
 light_effect light_effects[TOTAL_EFFECTS] = {
     {
         .fps = 20,
-        .render = (void *)fade,
+        .render = (void *)fade, // fade in
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
-        .effect_config = 2,
+        .effect_config = 1,
         .free_user_data = true,
         .user_data = NULL,
     },
     {
         .fps = 20,
-        .render = (void *)fade,
+        .render = (void *)fade, // fade out
         .total_lights = TOTAL_LIGHTS,
         .max_brightness = MAX_BRIGHTNESS,
         .min_brightness = MIN_BRIGHTNESS,
-        .effect_config = 1,
+        .effect_config = 2,
         .free_user_data = true,
         .user_data = NULL,
     },
@@ -122,7 +122,7 @@ void fade(light_effect *effect, uint32_t frame)
             if (effect->effect_config > 0) {
                 dir[i] = effect->effect_config;
             } else {
-                dir[i] = 1;
+                dir[i] = 0;
             }
         }
         ESP_LOGI(TAG, "Direction set to %d, effect config: %lu", dir[0], effect->effect_config);
@@ -134,13 +134,15 @@ void fade(light_effect *effect, uint32_t frame)
         switch (dir[i]) {
         case 1:
             increase_clamp(effect, i, effect->speed);
-            if (effect->effect_config == 0 && effect->light_state[i].level >= effect->max_brightness) {
+            if (effect->effect_config == 1 && effect->light_state[i].level >= effect->max_brightness)
+            {
                 dir[i] = 0;
             }
             break;
         case 2:
             decrease_clamp(effect, i, effect->speed);
-            if (effect->effect_config == 0 && effect->light_state[i].level <= effect->min_brightness) {
+            if (effect->effect_config == 2 && effect->light_state[i].level <= effect->min_brightness)
+            {
                 dir[i] = 0;
             }
             break;

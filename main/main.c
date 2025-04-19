@@ -14,6 +14,7 @@
 
 #define TOTAL_BUTTONS  5
 #define RESET_GPIO_PIN CONFIG_DALIZB_RESET_PIN
+#define RESET_GPIO_PIN2 CONFIG_DALIZB_RESET_PIN2
 
 #include "dali/dali.h"
 #include "driver/gptimer.h"
@@ -24,6 +25,7 @@
 
 #include "scenes.h"
 #include "ota.h"
+#include "wifi.h"
 
 static const char *TAG = "ZB_DALI";
 
@@ -159,8 +161,6 @@ static esp_err_t deferred_driver_init(void)
         init_led_emulator();
         driver_is_inited = true;
 #endif
-        if (xDaliTask != NULL)
-            xTaskNotifyGive(xDaliTask);
     }
     return driver_is_inited ? ESP_OK : ESP_FAIL;
 }
@@ -242,6 +242,8 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                      extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
                      extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
+            if (xDaliTask != NULL)
+                xTaskNotifyGive(xDaliTask);
         } else {
             ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
@@ -256,6 +258,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 
 static esp_err_t zb_attribute_reporting_handler(const esp_zb_zcl_report_attr_message_t *message)
 {
+    ESP_LOGI(TAG, "zb_attribute_reporting_handler");
     return ESP_OK;
 }
 
@@ -315,9 +318,9 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                         bool light_state = msg->attribute.data.value ? *(bool *)msg->attribute.data.value : false;
                         ESP_LOGI(TAG, "Light state changed to: %s", (light_state ? "on" : "off"));
                         if (light_state) {
-                            effect = 1;
+                            effect = 0; // fade in
                         } else {
-                            effect = 0;
+                            effect = 1; // fade out
                         }
                     }
                 } else if (msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
@@ -365,7 +368,10 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback: config response", callback_id);
         ret = zb_configure_report_resp_handler((esp_zb_zcl_cmd_config_report_resp_message_t *)message);
         break;
-    default: 
+    case ESP_ZB_CORE_IDENTIFY_EFFECT_CB_ID:
+        ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback: identify effect", callback_id);
+        break;
+    default:
         ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
         break;
     }
@@ -375,7 +381,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
 // Force reset in case reset button is pressed
 static void reset_interrupt_handler(void *args)
 {
-    // esp_restart();
+    esp_restart();
 }
 
 // Checks if the reset GPIO is bridged and performs a factory
@@ -390,22 +396,25 @@ void check_reset_gpio(void)
     io_conf.pull_up_en = 0;
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
+    gpio_config_t io_out_conf = {};
+    io_out_conf.intr_type = GPIO_INTR_DISABLE;
+    io_out_conf.mode = GPIO_MODE_OUTPUT;
+    io_out_conf.pin_bit_mask = (1ULL << RESET_GPIO_PIN2);
+    io_out_conf.pull_down_en = 0;
+    io_out_conf.pull_up_en = 1;
+    ESP_ERROR_CHECK(gpio_config(&io_out_conf));
+
+    ESP_LOGI(TAG, "Setting pin %d to high.", RESET_GPIO_PIN2);
+    gpio_set_level(RESET_GPIO_PIN2, 1);
+
     for (int i = 0; i < 5; i++) {
         int level = gpio_get_level(RESET_GPIO_PIN);
         if (level == 1) {
             if (i == 4)
             {
                 ESP_LOGW(TAG, "Pin %d is high, performing factory reset", RESET_GPIO_PIN);
-                if (!esp_zb_bdb_is_factory_new())
-                {
-                    esp_zb_factory_reset();
-                }
-                else
-                {
-                    factory_reset = true;
-                    ESP_LOGI(TAG, "Skipping factory reset, since we are already factory reset.");
-                    break;
-                }
+                nvs_flash_erase();
+                esp_zb_factory_reset();
             }
             else
             {
@@ -530,8 +539,42 @@ static void esp_zb_task(void *pvParameters)
 
     esp_zb_device_register(esp_zb_ep_list);
 
-    /* Config the reporting info  */
-    esp_zb_zcl_reporting_info_t reporting_info = {
+    esp_zb_zcl_reporting_info_t on_off_reporting_info = {
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
+        .ep = 10,
+        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .u.send_info.min_interval = 1,
+        .u.send_info.max_interval = 0,
+        .u.send_info.def_min_interval = 1,
+        .u.send_info.def_max_interval = 0,
+        .u.send_info.delta.u16 = 1000,
+        .attr_id = ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
+    };
+    esp_zb_zcl_update_reporting_info(&on_off_reporting_info);
+
+#if 0
+    esp_zb_zcl_reporting_info_t level_reporting_info = {
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
+        .ep = 10,
+        .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .u.send_info.min_interval = 1,
+        .u.send_info.max_interval = 0,
+        .u.send_info.def_min_interval = 1,
+        .u.send_info.def_max_interval = 0,
+        .u.send_info.delta.u16 = 1000,
+        .attr_id = ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_ID,
+        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
+    };
+    esp_zb_zcl_update_reporting_info(&level_reporting_info);
+#endif
+
+    /* Config the reporting info for multi-value  */
+    esp_zb_zcl_reporting_info_t multi_value_reporting_info = {
         .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
         .ep = 10,
         .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_MULTI_VALUE,
@@ -545,8 +588,7 @@ static void esp_zb_task(void *pvParameters)
         .attr_id = ESP_ZB_ZCL_ATTR_MULTI_VALUE_PRESENT_VALUE_ID,
         .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
     };
-
-    esp_zb_zcl_update_reporting_info(&reporting_info);
+    esp_zb_zcl_update_reporting_info(&multi_value_reporting_info);
 
     esp_zb_core_action_handler_register(zb_action_handler);
 
@@ -659,7 +701,7 @@ static void esp_dali_task(void *pvParameters)
 
             esp_zb_lock_acquire(portMAX_DELAY);
             uint16_t mstate_value = (uint16_t)effect;
-            uint16_t light_state = (uint16_t)(effect > 0 ? true : false);
+            uint16_t light_state = (uint16_t)(effect == 1 ? false : true);
             esp_zb_zcl_set_attribute_val(10,
                                          ESP_ZB_ZCL_CLUSTER_ID_MULTI_VALUE, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                          ESP_ZB_ZCL_ATTR_MULTI_VALUE_PRESENT_VALUE_ID, &mstate_value, false);
@@ -701,7 +743,7 @@ static void esp_dali_task(void *pvParameters)
                     // Turn light off
 #ifndef CONFIG_DALIZB_LED_EMULATOR
                     // ESP_LOGI(TAG, "Setting DALI address %u to off", i);
-                    dali_command(i, DALI_CMD_OFF, DALI_SHORT_ADDRESS);
+                    // dali_command(i, DALI_CMD_OFF, DALI_SHORT_ADDRESS);
 #else
                     if (driver_is_inited) {
                         ledc_set_duty(ledc_channel[i].speed_mode, ledc_channel[i].channel, 0);
@@ -712,7 +754,7 @@ static void esp_dali_task(void *pvParameters)
                     // Send level directly
 #ifndef CONFIG_DALIZB_LED_EMULATOR
                     // ESP_LOGI(TAG, "Setting DALI address %u to %u", i, light_effect->light_state[i].level);
-                    dali_arc(i, light_effect->light_state[i].level, DALI_SHORT_ADDRESS);
+                    // dali_arc(i, light_effect->light_state[i].level, DALI_SHORT_ADDRESS);
 #else
                     // ESP_LOGI(TAG,   "Set LED %d to %d", i, LED_DUTY_DIVIDER*light_effect->light_state[i].level);
                     if (driver_is_inited) {
@@ -752,13 +794,8 @@ void app_main(void)
     esp_read_mac(ieeeMac, ESP_MAC_IEEE802154);
     ESP_LOGI(TAG, "Zigbee MAC: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", ieeeMac[0], ieeeMac[1], ieeeMac[2], ieeeMac[3], ieeeMac[4], ieeeMac[5], ieeeMac[6], ieeeMac[7]);
 
-    ESP_LOGI(TAG, "Hello World from OTA update! Version 5!");
-
+    ESP_LOGI(TAG, "Checking for factory reset...");
     check_reset_gpio();
-
-#ifdef CONFIG_DALIZB_WIFI
-    over_the_air_update();
-#endif
 
     ESP_LOGI(TAG, "nvs_flash_init()");
     esp_err_t nvs_err = nvs_flash_init();
@@ -783,6 +820,16 @@ void app_main(void)
     default:
         ESP_ERROR_CHECK(nvs_err);
     }
+
+#if 0
+#ifdef CONFIG_DALIZB_WIFI_PROVISION
+    over_the_air_update(true);
+#else
+#ifdef CONFIG_DALIZB_WIFI
+    over_the_air_update(false);
+#endif
+#endif
+#endif
 
     esp_pm_lock_handle_t freq_lock;
     esp_pm_lock_handle_t light_sleep_lock;

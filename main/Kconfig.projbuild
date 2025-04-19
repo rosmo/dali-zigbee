@@ -18,11 +18,23 @@ menu "Dali-Zigbee Configuration"
         help
             Reset PIN.
 
+    config DALIZB_RESET_PIN2
+        int "Reset GPIO pin 2"
+        default 7
+        help
+            Reset 2 PIN (for setting it just to high).
+
     config DALIZB_WIFI
         bool "Connect to WiFi"
         default n
         help
             Connect to WiFi.
+
+    config DALIZB_WIFI_PROVISION
+        bool "Provision WiFi"
+        default n
+        help
+            Provision WiFi via SoftAP. 
 
     config DALIZB_WIFI_SSID
         string "WiFi SSID"

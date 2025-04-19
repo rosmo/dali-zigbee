@@ -4,6 +4,9 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "wifi.h"
+#include <esp_event.h>
+
+#include "wifi_manager.h"
 
 static const char *TAG = "WiFi";
 static esp_netif_t *s_dali_sta_netif = NULL;
@@ -11,8 +14,11 @@ static SemaphoreHandle_t s_semph_get_ip_addrs = NULL;
 
 static int s_retry_num = 0;
 
-static void dali_handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base,
-                                            int32_t event_id, void *event_data)
+static TaskHandle_t *xTaskToNotify = NULL;
+
+static void
+dali_handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base,
+                                int32_t event_id, void *event_data)
 {
     s_retry_num++;
     if (s_retry_num > CONFIG_DALIZB_MAXIMUM_RETRY) {
@@ -121,6 +127,7 @@ esp_err_t dali_wifi_sta_do_connect(wifi_config_t wifi_config, bool wait)
 
 esp_err_t dali_wifi_sta_do_disconnect(void)
 {
+#ifndef CONFIG_DALIZB_WIFI_PROVISION
     ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &dali_handler_on_wifi_disconnect));
     ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &dali_handler_on_sta_got_ip));
     ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &dali_handler_on_wifi_connect));
@@ -128,15 +135,20 @@ esp_err_t dali_wifi_sta_do_disconnect(void)
         vSemaphoreDelete(s_semph_get_ip_addrs);
     }
     return esp_wifi_disconnect();
+#else
+    return ESP_OK;
+#endif
 }
 
 void dali_wifi_shutdown(void)
 {
+#ifndef CONFIG_DALIZB_WIFI_PROVISION
     dali_wifi_sta_do_disconnect();
     dali_wifi_stop();
+#endif
 }
 
-esp_err_t dali_wifi_connect_now(void)
+esp_err_t dali_wifi_connect_now()
 {
     ESP_LOGI(TAG, "Start WiFi connect.");
     esp_log_level_set("wifi", ESP_LOG_WARN);
@@ -153,16 +165,60 @@ esp_err_t dali_wifi_connect_now(void)
             .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
         },
     };
-
     return dali_wifi_sta_do_connect(wifi_config, true);
 }
 
-esp_err_t dali_wifi_connect(void)
+esp_err_t dali_wifi_connect()
 {
-    if (dali_wifi_connect_now() != ESP_OK) {
+    if (dali_wifi_connect_now() != ESP_OK)
+    {
         return ESP_FAIL;
     }
     ESP_ERROR_CHECK(esp_register_shutdown_handler(&dali_wifi_shutdown));
 
     return ESP_OK;
+}
+
+void dali_wifi_provisioning_monitoring_task(void *pvParameter)
+{
+    for (;;)
+    {
+        ESP_LOGI(TAG, "Free heap: %lu KB", esp_get_free_heap_size() / 1024);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+}
+
+/**
+ * @brief this is an exemple of a callback that you can setup in your own app to get notified of wifi manager event.
+ */
+void dali_wifi_provisioning_cb_connection_ok(void *pvParameter)
+{
+    ip_event_got_ip_t *param = (ip_event_got_ip_t *)pvParameter;
+
+    /* transform IP to human readable string */
+    char str_ip[16];
+    esp_ip4addr_ntoa(&param->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
+
+    ESP_LOGI(TAG, "I have a connection and my IP is %s!", str_ip);
+    if (xTaskToNotify != NULL)
+    {
+        xTaskNotifyGive(*xTaskToNotify);
+        ESP_LOGI(TAG, "Stopping WiFi manager...");
+        wifi_manager_stop();
+    }
+}
+
+void dali_wifi_provision(TaskHandle_t *xOtaTask)
+{
+    xTaskToNotify = xOtaTask;
+
+    /* start the wifi manager */
+    wifi_manager_init();
+    wifi_manager_start();
+
+    /* register a callback as an example to how you can integrate your code with the wifi manager */
+    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &dali_wifi_provisioning_cb_connection_ok);
+
+    /* Your code should go here. Here we simply create a task on core 2 that monitors free heap memory */
+    xTaskCreate(&dali_wifi_provisioning_monitoring_task, "monitoring_task", 2048, NULL, 1, NULL);
 }

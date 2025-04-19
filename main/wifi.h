@@ -2,6 +2,7 @@
 #define _WIFI_H
 
 #include "esp_wifi.h"
+#include <nvs_flash.h>
 
 #define DALIZB_NETIF_DESC_STA "dalizb_netif_sta"
 
@@ -25,6 +26,7 @@
 #define DALIZB_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WAPI_PSK
 #endif
 
-esp_err_t dali_wifi_connect(void);
+esp_err_t dali_wifi_connect();
 void dali_wifi_shutdown(void);
+void dali_wifi_provision();
 #endif

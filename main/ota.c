@@ -18,7 +18,7 @@
 #include "esp_wifi.h"
 #include "wifi.h"
 #include "esp_crt_bundle.h"
-
+#include "wifi_manager.h"
 
 #define BUFFSIZE 1024
 #define HASH_LEN 32 /* SHA-256 digest length */
@@ -39,9 +39,15 @@ static void http_cleanup(esp_http_client_handle_t client)
     esp_http_client_cleanup(client);
 
     ESP_LOGI(TAG, "Shutting down WiFi\n");
+#ifndef CONFIG_DALIZB_WIFI_PROVISION
+    wifi_manager_stop();
+#endif
     dali_wifi_shutdown();
-
     xSemaphoreGive(ota_ready_sem);
+    while (true)
+    {
+        vTaskDelay(portMAX_DELAY);
+    }
 }
 
 static void __attribute__((noreturn)) task_fatal_error(void)
@@ -78,7 +84,20 @@ static void ota_task(void *pvParameter)
     esp_ota_handle_t update_handle = 0 ;
     const esp_partition_t *update_partition = NULL;
 
-    ESP_LOGI(TAG, "Starting Over-The-Air update task");
+    ESP_LOGI(TAG, "Starting Over-The-Air update task, waiting for network connection...");
+
+    uint32_t ulNotificationValue;
+    // Wait 5 minutes for connection
+    ulNotificationValue = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(300000));
+    if (ulNotificationValue != 1)
+    {
+        ESP_LOGE(TAG, "No network connection, skipping OTA.");
+        return;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Received network connection, continuing with OTA attempt.");
+    }
 
     const esp_partition_t *configured = esp_ota_get_boot_partition();
     const esp_partition_t *running = esp_ota_get_running_partition();
@@ -140,7 +159,6 @@ static void ota_task(void *pvParameter)
         if (data_read < 0) {
             ESP_LOGE(TAG, "Error: SSL data read error");
             http_cleanup(client);
-            task_fatal_error();
         } else if (data_read > 0) {
             if (image_header_was_checked == false) {
                 esp_app_desc_t new_app_info;
@@ -182,23 +200,21 @@ static void ota_task(void *pvParameter)
                     err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
                     if (err != ESP_OK) {
                         ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
-                        http_cleanup(client);
                         esp_ota_abort(update_handle);
-                        task_fatal_error();
+                        http_cleanup(client);
                     }
                     ESP_LOGI(TAG, "esp_ota_begin succeeded");
                 } else {
                     ESP_LOGE(TAG, "received package is not fit len");
-                    http_cleanup(client);
                     esp_ota_abort(update_handle);
-                    task_fatal_error();
+                    http_cleanup(client);
                 }
             }
             err = esp_ota_write(update_handle, (const void *)ota_write_data, data_read);
-            if (err != ESP_OK) {
-                http_cleanup(client);
+            if (err != ESP_OK)
+            {
                 esp_ota_abort(update_handle);
-                task_fatal_error();
+                http_cleanup(client);
             }
             binary_file_length += data_read;
             ESP_LOGD(TAG, "Written image length %d", binary_file_length);
@@ -220,9 +236,8 @@ static void ota_task(void *pvParameter)
     ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
     if (esp_http_client_is_complete_data_received(client) != true) {
         ESP_LOGE(TAG, "Error in receiving complete file");
-        http_cleanup(client);
         esp_ota_abort(update_handle);
-        task_fatal_error();
+        http_cleanup(client);
     }
 
     err = esp_ota_end(update_handle);
@@ -233,25 +248,23 @@ static void ota_task(void *pvParameter)
             ESP_LOGE(TAG, "esp_ota_end failed (%s)!", esp_err_to_name(err));
         }
         http_cleanup(client);
-        task_fatal_error();
+        return;
     }
 
     err = esp_ota_set_boot_partition(update_partition);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
         http_cleanup(client);
-        task_fatal_error();
     }
     ESP_LOGI(TAG, "Prepare to restart system!");
     esp_restart();
     return ;
 }
 
-void over_the_air_update(void)
+void over_the_air_update(bool provision)
 {
     uint8_t sha_256[HASH_LEN] = { 0 };
     esp_partition_t partition;
-
     ota_ready_sem = xSemaphoreCreateBinary();
 
     // get sha256 digest for the partition table
@@ -281,25 +294,21 @@ void over_the_air_update(void)
         }
     }
 
-    // Initialize NVS.
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        // OTA app partition table has a smaller NVS partition size than the non-OTA
-        // partition table. This size mismatch may cause NVS initialization to fail.
-        // If this happens, we erase NVS partition and initialize NVS again.
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(err);
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    ESP_ERROR_CHECK(dali_wifi_connect());
+    TaskHandle_t xOtaTask = NULL;
+    xTaskCreate(&ota_task, "ota_task", 8192, NULL, 5, &xOtaTask);
 
     esp_wifi_set_ps(WIFI_PS_NONE);
+    if (provision)
+    {
+        dali_wifi_provision(&xOtaTask);
+    }
+    else
+    {
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    xTaskCreate(&ota_task, "ota_task", 8192, NULL, 5, NULL);
+        dali_wifi_connect();
+    }
 
     ESP_LOGI(TAG, "Waiting for OTA to complete...");
     xSemaphoreTake(ota_ready_sem, portMAX_DELAY);

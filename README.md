@@ -5,6 +5,8 @@ switch between different effects. Also has a LED emulator for testing new effect
 
 DALI control implement using a C++ to C port of the Arduino DALI library: [github.com/hubsif/arduino-dali](https://github.com/hubsif/arduino-dali).
 
+Needs a big flash (8 MB).
+
 ## Troubleshooting
 
 `Stack BDB Device Start failure with ESP_FAIL status, steering`: try erasing the flash with

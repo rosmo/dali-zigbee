@@ -70,7 +70,6 @@ int dali_send_raw_wait(dali *dali_, const uint8_t *message, uint8_t length, uint
     // ESP_LOGI("dali_send_raw_wait", "time: %llu, timeout: %d", time, (timeout == 0 ? 50 : timeout) * 1000);
     while (!dali_bus_is_idle(dali_->bus)) {
         int64_t time_now = esp_timer_get_time();
-        vTaskDelay(2);
         if ((time_now - time) > ((timeout == 0 ? 50 : timeout) * 1000)) {
             return DALI_READY_TIMEOUT;
         }
@@ -79,7 +78,6 @@ int dali_send_raw_wait(dali *dali_, const uint8_t *message, uint8_t length, uint
 
     while (!dali_bus_is_idle(dali_->bus)) {
         int64_t time_now = esp_timer_get_time();
-        vTaskDelay(2);
         if ((time_now - time) > ((timeout == 0 ? 50 : timeout) * 1000)) {
             return DALI_READY_TIMEOUT;
         }

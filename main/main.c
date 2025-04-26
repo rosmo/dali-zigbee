@@ -13,6 +13,7 @@
 #include <nvs_flash.h>
 
 #define TOTAL_BUTTONS  5
+#define TOTAL_LIGHTS 5
 #define RESET_GPIO_PIN CONFIG_DALIZB_RESET_PIN
 #define RESET_GPIO_PIN2 CONFIG_DALIZB_RESET_PIN2
 
@@ -498,6 +499,27 @@ static void esp_zb_task(void *pvParameters)
 
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(esp_zb_cluster_list, esp_zb_level_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
 
+#if 0
+    for (int i = 0; i < TOTAL_LIGHTS; i++)
+    {
+        // Add level clusters for each light for debugging
+        esp_zb_level_cluster_cfg_t light_level_cfg;
+        light_level_cfg.current_level = 254;
+
+        esp_zb_attribute_list_t *esp_zb_level_cluster_light = esp_zb_level_cluster_create(&light_level_cfg);
+
+        uint16_t remaining_time = ESP_ZB_ZCL_LEVEL_CONTROL_REMAINING_TIME_DEFAULT_VALUE;
+        uint8_t min_level = MIN_BRIGHTNESS;
+        uint8_t max_level = MAX_BRIGHTNESS;
+
+        ESP_ERROR_CHECK(esp_zb_level_cluster_add_attr(esp_zb_level_cluster_light, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_REMAINING_TIME_ID, &remaining_time));
+        ESP_ERROR_CHECK(esp_zb_level_cluster_add_attr(esp_zb_level_cluster_light, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_MIN_LEVEL_ID, &min_level));
+        ESP_ERROR_CHECK(esp_zb_level_cluster_add_attr(esp_zb_level_cluster_light, ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_MAX_LEVEL_ID, &max_level));
+
+        ESP_ERROR_CHECK(esp_zb_cluster_list_add_level_cluster(esp_zb_cluster_list, esp_zb_level_cluster_light, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    }
+#endif
+
     esp_zb_multistate_value_cluster_cfg_t multistate_value_cfg;
     multistate_value_cfg.out_of_service = false;
     multistate_value_cfg.present_value = 0;
@@ -671,7 +693,7 @@ static void esp_dali_task(void *pvParameters)
 {
     uint32_t fps_sleep = 0, frame = 0;
     uint64_t frame_start_time = 0, frame_end_time = 0;
-    uint64_t effect_start_time = 0;
+    uint64_t effect_start_time = 0, dali_commands = 0, last_dali_commands = 0;
     int64_t  frame_diff = 0;
 
     ESP_LOGI(TAG, "Waiting for driver initialization...");
@@ -717,8 +739,8 @@ static void esp_dali_task(void *pvParameters)
             ESP_ERROR_CHECK(nvs_err);
 
             light_effect = &light_effects[effect];
-            memcpy(light_effect->light_state, last_light_state, sizeof(light_state) * light_effect->total_lights);
             fps_sleep = 1000 / light_effect->fps;
+            memcpy(light_effect->light_state, last_light_state, sizeof(light_state) * light_effect->total_lights);
             effect_start_time = esp_timer_get_time() / 1000000;
             ESP_LOGI(TAG, "Effect %ld active, FPS sleep: %lu ms per frame", effect, fps_sleep);
         }
@@ -734,8 +756,10 @@ static void esp_dali_task(void *pvParameters)
                 strcat(light_status, buf);
             }
             strcat(light_status, "|");
-            ESP_LOGI(TAG, "%s", light_status);
+            ESP_LOGI(TAG, "%s -- %lld cmds/60frames", light_status, (dali_commands - last_dali_commands));
+            last_dali_commands = dali_commands;
         }
+        bool light_state_updated = false;
 
         for (int i = 0; i < light_effect->total_lights; i++) {
             if (light_effect->light_state[i].level != last_light_state[i].level) {
@@ -743,7 +767,9 @@ static void esp_dali_task(void *pvParameters)
                     // Turn light off
 #ifndef CONFIG_DALIZB_LED_EMULATOR
                     // ESP_LOGI(TAG, "Setting DALI address %u to off", i);
-                    // dali_command(i, DALI_CMD_OFF, DALI_SHORT_ADDRESS);
+                    dali_command(i + 1, DALI_CMD_OFF, DALI_SHORT_ADDRESS);
+                    dali_commands += 1;
+                    light_state_updated = true;
 #else
                     if (driver_is_inited) {
                         ledc_set_duty(ledc_channel[i].speed_mode, ledc_channel[i].channel, 0);
@@ -754,7 +780,13 @@ static void esp_dali_task(void *pvParameters)
                     // Send level directly
 #ifndef CONFIG_DALIZB_LED_EMULATOR
                     // ESP_LOGI(TAG, "Setting DALI address %u to %u", i, light_effect->light_state[i].level);
-                    // dali_arc(i, light_effect->light_state[i].level, DALI_SHORT_ADDRESS);
+                    int light_diff = abs((int)light_effect->light_state[i].level - (int)last_light_state[i].level);
+                    if (light_diff >= 16 || (light_diff != 0 && light_effect->light_state[i].level == light_effect->max_brightness))
+                    {
+                        dali_arc(i + 1, light_effect->light_state[i].level, DALI_SHORT_ADDRESS);
+                        dali_commands += 1;
+                        light_state_updated = true;
+                    }
 #else
                     // ESP_LOGI(TAG,   "Set LED %d to %d", i, LED_DUTY_DIVIDER*light_effect->light_state[i].level);
                     if (driver_is_inited) {
@@ -766,8 +798,10 @@ static void esp_dali_task(void *pvParameters)
             }
         }
         // Store last state
-        memcpy(last_light_state, light_effect->light_state, sizeof(light_state) * light_effect->total_lights);
-
+        if (light_state_updated)
+        {
+            memcpy(last_light_state, light_effect->light_state, sizeof(light_state) * light_effect->total_lights);
+        }
         frame_end_time = esp_timer_get_time() / 1000;
         frame_diff = frame_end_time - frame_start_time;
         xSemaphoreGive(lightMutex);
